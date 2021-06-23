@@ -38,7 +38,7 @@ class PercepNet(nn.Module):
         #self.hidden_dim = hidden_dim
         #self.n_layers = n_layers
         
-        self.fc = nn.Linear(input_dim, 128)
+        self.fc = nn.Sequential(nn.Linear(input_dim, 128), nn.Sigmoid())
         self.conv1 = nn.Conv1d(128, 512, 5, stride=1)
         self.conv2 = nn.Conv1d(512, 512, 3, stride=1)
         self.gru = nn.GRU(512, 512, 3, batch_first=True)
@@ -46,7 +46,6 @@ class PercepNet(nn.Module):
         self.gru_rb = nn.GRU(512, 128, 1, batch_first=True)
         self.fc_gb = nn.Sequential(nn.Linear(512, 34), nn.Sigmoid())
         self.fc_rb = nn.Sequential(nn.Linear(128, 34), nn.Sigmoid())
-        self.relu = nn.ReLU()
 
     def forward(self, x):
         x = self.fc(x)
@@ -76,15 +75,18 @@ class CustomLoss(nn.Module):
     def forward(self, outputs, targets):
         gamma = 0.5
         C4 = 10
-
+        epsi = 1e-10
         rb_hat = outputs[0]
         gb_hat = outputs[1]
         rb = targets[:,:,:34]
         gb = targets[:,:,34:68]
-
-        return ((gb**gamma - gb_hat**gamma)**2).sum() + C4*((gb**gamma - gb_hat**gamma)**4).sum() + (((1-rb)**gamma-(1-rb_hat)**gamma)**2).sum()
+        
+        return (torch.sum(torch.pow((torch.pow(gb+epsi,gamma) - torch.pow(gb_hat+epsi,gamma)),2)))
+             #+ C4*torch.sum(torch.pow(torch.pow(gb+epsi,gamma) - torch.pow(gb_hat+epsi,gamma),4))
+             #+ torch.sum(torch.pow(torch.pow((1-rb+epsi),gamma)-torch.pow((1-rb_hat+epsi),gamma),2)))
 
 def train():
+    UseCustomLoss = False
     dataset = h5Dataset("training.h5")
     trainset_ratio = 0.8 # 1 - validation set ration
     train_size = int(trainset_ratio * len(dataset))
@@ -92,12 +94,16 @@ def train():
     batch_size=2
     train_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, test_size])
     
-    train_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size)
-    validation_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size)
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size)
+    validation_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size)
 
     model = PercepNet()
     optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
-    criterion = CustomLoss()
+    if UseCustomLoss:
+        #CustomLoss cause Nan error need fix
+        criterion = CustomLoss()
+    else:
+        criterion = nn.MSELoss()
     num_epochs = 2
     for epoch in range(num_epochs):  # loop over the dataset multiple times
 
@@ -111,16 +117,26 @@ def train():
 
             # forward + backward + optimize
             outputs = model(inputs)
+            outputs = torch.cat(outputs,-1)
             loss = criterion(outputs, targets)
             loss.backward()
             optimizer.step()
 
             # print statistics
             running_loss += loss.item()
+
+            # for testing
+            print('[%d, %5d] loss: %.3f' %
+                    (epoch + 1, i + 1, running_loss))
+
             if i % 2000 == 1999:    # print every 2000 mini-batches
                 print('[%d, %5d] loss: %.3f' %
                     (epoch + 1, i + 1, running_loss / 2000))
                 running_loss = 0.0
 
     print('Finished Training')
-train()
+    print('save model')
+    torch.save(model.state_dict(), 'model.pt')
+
+if __name__ == '__main__':
+    train()
