@@ -41,10 +41,13 @@ class PercepNet(nn.Module):
         self.fc = nn.Sequential(nn.Linear(input_dim, 128), nn.Sigmoid())
         self.conv1 = nn.Conv1d(128, 512, 5, stride=1)
         self.conv2 = nn.Conv1d(512, 512, 3, stride=1)
-        self.gru = nn.GRU(512, 512, 3, batch_first=True)
+        #self.gru = nn.GRU(512, 512, 3, batch_first=True)
+        self.gru1 = nn.GRU(512, 512, 1, batch_first=True)
+        self.gru2 = nn.GRU(512, 512, 1, batch_first=True)
+        self.gru3 = nn.GRU(512, 512, 1, batch_first=True)
         self.gru_gb = nn.GRU(512, 512, 1, batch_first=True)
-        self.gru_rb = nn.GRU(512, 128, 1, batch_first=True)
-        self.fc_gb = nn.Sequential(nn.Linear(512, 34), nn.Sigmoid())
+        self.gru_rb = nn.GRU(1024, 128, 1, batch_first=True)
+        self.fc_gb = nn.Sequential(nn.Linear(512*5, 34), nn.Sigmoid())
         self.fc_rb = nn.Sequential(nn.Linear(128, 34), nn.Sigmoid())
 
     def forward(self, x):
@@ -53,13 +56,17 @@ class PercepNet(nn.Module):
         x = self.conv1(x)
         convout = self.conv2(x)
         convout = convout.permute([0,2,1]) # B, T, D
-        gruout, grustate = self.gru(convout)
-        
-        rnn_gb_out = self.gru_gb(gruout)
-        gb = self.fc_gb(rnn_gb_out[0])
+        gru1_out, gru1_state = self.gru1(convout)
+        gru2_out, gru2_state = self.gru2(gru1_out)
+        gru3_out, gru3_state = self.gru3(gru2_out)
+        gru_gb_out, gru_gb_state = self.gru_gb(gru3_out)
+        concat_gb_layer = torch.cat((convout,gru1_out,gru2_out,gru3_out,gru_gb_out),-1)
+        gb = self.fc_gb(concat_gb_layer)
 
-        rnn_rb_out = self.gru_rb(gruout)
-        rb = self.fc_rb(rnn_rb_out[0])
+        #concat rb need fix
+        concat_rb_layer = torch.cat((gru3_out,convout),-1)
+        rnn_rb_out, gru_rb_state = self.gru_rb(concat_rb_layer)
+        rb = self.fc_rb(rnn_rb_out)
         return gb,rb
 
 def test():
@@ -81,12 +88,12 @@ class CustomLoss(nn.Module):
         rb = targets[:,:,:34]
         gb = targets[:,:,34:68]
         
-        return (torch.sum(torch.pow((torch.pow(gb+epsi,gamma) - torch.pow(gb_hat+epsi,gamma)),2)))
-             #+ C4*torch.sum(torch.pow(torch.pow(gb+epsi,gamma) - torch.pow(gb_hat+epsi,gamma),4))
-             #+ torch.sum(torch.pow(torch.pow((1-rb+epsi),gamma)-torch.pow((1-rb_hat+epsi),gamma),2)))
+        return (torch.sum(torch.pow((torch.pow(gb,gamma) - torch.pow(gb_hat,gamma)),2))) \
+             + C4*torch.sum(torch.pow(torch.pow(gb,gamma) - torch.pow(gb_hat,gamma),4)) \
+             + torch.sum(torch.pow(torch.pow((1-rb),gamma)-torch.pow((1-rb_hat),gamma),2))
 
 def train():
-    UseCustomLoss = False
+    UseCustomLoss = True
     dataset = h5Dataset("training.h5")
     trainset_ratio = 0.8 # 1 - validation set ration
     train_size = int(trainset_ratio * len(dataset))
@@ -104,7 +111,7 @@ def train():
         criterion = CustomLoss()
     else:
         criterion = nn.MSELoss()
-    num_epochs = 2
+    num_epochs = 10
     for epoch in range(num_epochs):  # loop over the dataset multiple times
 
         running_loss = 0.0
@@ -117,7 +124,7 @@ def train():
 
             # forward + backward + optimize
             outputs = model(inputs)
-            outputs = torch.cat(outputs,-1)
+            #outputs = torch.cat(outputs,-1)
             loss = criterion(outputs, targets)
             loss.backward()
             optimizer.step()
